@@ -27,9 +27,18 @@ app.use(cors({
   credentials: true
 }));
 
-
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+// 🔐 AUTH MIDDLEWARE
+function checkAuth(req, res, next) {
+  const token = req.headers['authorization'];
+  if (token === `Bearer ${process.env.AUTH_TOKEN}`) {
+    next();
+  } else {
+    return res.status(403).json({ error: 'Unauthorized' });
+  }
+}
 
 // SQLite setup
 const db = new sqlite3.Database('./database.db');
@@ -54,8 +63,8 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
-// Upload artwork
-app.post('/api/upload', upload.single('image'), (req, res) => {
+// 🔐 Upload artwork (protected)
+app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
   const { title, description } = req.body;
   const file = req.file;
 
@@ -73,7 +82,7 @@ app.post('/api/upload', upload.single('image'), (req, res) => {
   );
 });
 
-// Get all artworks
+// 🆓 Get all artworks (public)
 app.get('/api/artworks', (req, res) => {
   console.log('📦 GET /api/artworks called');
   db.all(`SELECT * FROM artwork ORDER BY uploaded_at DESC`, [], (err, rows) => {
@@ -82,8 +91,8 @@ app.get('/api/artworks', (req, res) => {
   });
 });
 
-// Delete artwork by ID
-app.delete('/api/artworks/:id', (req, res) => {
+// 🔐 Delete artwork by ID (protected)
+app.delete('/api/artworks/:id', checkAuth, (req, res) => {
   const id = req.params.id;
 
   db.get(`SELECT filename FROM artwork WHERE id = ?`, [id], (err, row) => {
