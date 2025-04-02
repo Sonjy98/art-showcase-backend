@@ -4,20 +4,28 @@ const cors = require('cors');
 const multer = require('multer');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
-const fs = require('fs'); // 🔥 needed for deleting files
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Middleware
-app.use(cors());
+// ✅ CORS fix for Netlify
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://courageous-pastelito-4fbee7.netlify.app',
+];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
+
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // SQLite setup
 const db = new sqlite3.Database('./database.db');
 
-// Create table
 db.run(`
   CREATE TABLE IF NOT EXISTS artwork (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,7 +73,7 @@ app.get('/api/artworks', (req, res) => {
   });
 });
 
-// 🔥 Delete artwork by ID
+// Delete artwork by ID
 app.delete('/api/artworks/:id', (req, res) => {
   const id = req.params.id;
 
