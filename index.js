@@ -10,14 +10,13 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // ✅ CORS fix for Netlify
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://courageous-pastelito-4fbee7.netlify.app',
-];
+//const allowedOrigins = [
+//  'http://localhost:5173',
+//  'https://courageous-pastelito-4fbee7.netlify.app',
+//];
 
 app.use(cors({
-  origin: allowedOrigins,
-  credentials: true
+  origin: '*',
 }));
 
 app.use(express.json());
