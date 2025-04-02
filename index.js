@@ -9,14 +9,21 @@ const fs = require('fs');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ✅ CORS fix for Netlify
-//const allowedOrigins = [
-//  'http://localhost:5173',
-//  'https://courageous-pastelito-4fbee7.netlify.app',
-//];
+// ✅ Dynamic CORS with origin logging
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://courageous-pastelito-4fbee7.netlify.app'
+];
 
 app.use(cors({
-  origin: '*',
+  origin: function (origin, callback) {
+    console.log('🌐 CORS request from:', origin);
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  }
 }));
 
 app.use(express.json());
@@ -66,6 +73,7 @@ app.post('/api/upload', upload.single('image'), (req, res) => {
 
 // Get all artworks
 app.get('/api/artworks', (req, res) => {
+  console.log('📦 GET /api/artworks called');
   db.all(`SELECT * FROM artwork ORDER BY uploaded_at DESC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
