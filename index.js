@@ -80,7 +80,6 @@ app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
     Key: fileKey,
     Body: file.buffer,
     ContentType: file.mimetype,
-    ACL: 'public-read'
   }, (err, data) => {
     if (err) {
       console.error('❌ S3 Upload Error:', err.message);
