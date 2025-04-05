@@ -9,7 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// ✅ Allow localhost + your Netlify domain
+// ✅ Allow localhost + Netlify
 const allowedOrigins = [
   'http://localhost:5173',
   'https://courageous-pastelito-4fbee7.netlify.app'
@@ -29,13 +29,11 @@ app.use(cors({
 
 app.use(express.json());
 
-// 🔐 Auth Middleware (skip in dev mode)
+// 🔐 Auth Middleware
 const checkAuth = (req, res, next) => {
   if (process.env.NODE_ENV !== 'production') return next();
-
   const token = req.headers['authorization'];
   if (token === `Bearer ${process.env.AUTH_TOKEN}`) return next();
-
   return res.status(403).json({ error: 'Unauthorized' });
 };
 
@@ -79,6 +77,8 @@ app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
   }, (err, data) => {
     if (err) return res.status(500).json({ error: err.message });
 
+    console.log('✅ Uploaded to S3:', data.Location);
+
     db.run(
       `INSERT INTO artwork (title, description, filename) VALUES (?, ?, ?)`,
       [title, description, fileKey],
@@ -96,8 +96,11 @@ app.get('/api/artworks', (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
 
     const withUrls = rows.map(row => ({
-      ...row,
-      filename: `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${row.filename}`
+      id: row.id,
+      title: row.title,
+      description: row.description,
+      url: `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${row.filename}`,
+      uploaded_at: row.uploaded_at
     }));
 
     res.json(withUrls);
@@ -112,11 +115,9 @@ app.delete('/api/artworks/:id', checkAuth, (req, res) => {
     if (err) return res.status(500).json({ error: err.message });
     if (!row) return res.status(404).json({ error: 'Artwork not found.' });
 
-    const Key = row.filename;
-
     s3.deleteObject({
       Bucket: BUCKET_NAME,
-      Key
+      Key: row.filename
     }, (err) => {
       if (err) {
         console.warn('⚠️ Could not delete file:', err.message);
