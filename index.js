@@ -31,9 +31,16 @@ app.use(express.json());
 
 // 🔐 Auth Middleware
 const checkAuth = (req, res, next) => {
-  if (process.env.NODE_ENV !== 'production') return next();
+  if (process.env.NODE_ENV !== 'production') {
+    return next();
+  }
+
   const token = req.headers['authorization'];
+  console.log('🔐 Incoming Authorization Header:', token);
+  console.log('🔐 Expected Token:', `Bearer ${process.env.AUTH_TOKEN}`);
+
   if (token === `Bearer ${process.env.AUTH_TOKEN}`) return next();
+
   return res.status(403).json({ error: 'Unauthorized' });
 };
 
@@ -75,7 +82,10 @@ app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
     ContentType: file.mimetype,
     ACL: 'public-read'
   }, (err, data) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) {
+      console.error('❌ S3 Upload Error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
 
     console.log('✅ Uploaded to S3:', data.Location);
 
@@ -83,7 +93,12 @@ app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
       `INSERT INTO artwork (title, description, filename) VALUES (?, ?, ?)`,
       [title, description, fileKey],
       function (err) {
-        if (err) return res.status(500).json({ error: err.message });
+        if (err) {
+          console.error('❌ DB Insert Error:', err.message);
+          return res.status(500).json({ error: err.message });
+        }
+
+        console.log('✅ Saved to DB:', this.lastID);
         res.json({ success: true, id: this.lastID });
       }
     );
@@ -93,7 +108,10 @@ app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
 // 🆓 Get all artworks
 app.get('/api/artworks', (req, res) => {
   db.all(`SELECT * FROM artwork ORDER BY uploaded_at DESC`, [], (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) {
+      console.error('❌ DB Read Error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
 
     const withUrls = rows.map(row => ({
       id: row.id,
@@ -112,7 +130,11 @@ app.delete('/api/artworks/:id', checkAuth, (req, res) => {
   const id = req.params.id;
 
   db.get(`SELECT filename FROM artwork WHERE id = ?`, [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+    if (err) {
+      console.error('❌ DB Lookup Error:', err.message);
+      return res.status(500).json({ error: err.message });
+    }
+
     if (!row) return res.status(404).json({ error: 'Artwork not found.' });
 
     s3.deleteObject({
@@ -120,11 +142,18 @@ app.delete('/api/artworks/:id', checkAuth, (req, res) => {
       Key: row.filename
     }, (err) => {
       if (err) {
-        console.warn('⚠️ Could not delete file:', err.message);
+        console.warn('⚠️ Could not delete file from S3:', err.message);
+      } else {
+        console.log('✅ Deleted from S3:', row.filename);
       }
 
       db.run(`DELETE FROM artwork WHERE id = ?`, [id], (deleteErr) => {
-        if (deleteErr) return res.status(500).json({ error: deleteErr.message });
+        if (deleteErr) {
+          console.error('❌ DB Delete Error:', deleteErr.message);
+          return res.status(500).json({ error: deleteErr.message });
+        }
+
+        console.log('✅ Deleted artwork record from DB:', id);
         res.json({ success: true });
       });
     });
