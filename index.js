@@ -2,12 +2,29 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const sqlite3 = require('sqlite3').verbose();
 const AWS = require('aws-sdk');
 const { v4: uuidv4 } = require('uuid');
+const { Pool } = require('pg');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// ✅ PostgreSQL pool
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+});
+
+// 🛠️ Create table (run only once)
+db.query(`
+  CREATE TABLE IF NOT EXISTS artwork (
+    id SERIAL PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    filename TEXT,
+    uploaded_at TIMESTAMPTZ DEFAULT NOW()
+  );
+`).then(() => console.log('✅ Table checked/created')).catch(console.error);
 
 // ✅ Allow localhost + Netlify
 const allowedOrigins = [
@@ -31,30 +48,15 @@ app.use(express.json());
 
 // 🔐 Auth Middleware
 const checkAuth = (req, res, next) => {
-  if (process.env.NODE_ENV !== 'production') {
-    return next();
-  }
+  if (process.env.NODE_ENV !== 'production') return next();
 
   const token = req.headers['authorization'];
   console.log('🔐 Incoming Authorization Header:', token);
   console.log('🔐 Expected Token:', `Bearer ${process.env.AUTH_TOKEN}`);
 
   if (token === `Bearer ${process.env.AUTH_TOKEN}`) return next();
-
   return res.status(403).json({ error: 'Unauthorized' });
 };
-
-// 🛠️ SQLite setup
-const db = new sqlite3.Database('./database.db');
-db.run(`
-  CREATE TABLE IF NOT EXISTS artwork (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    title TEXT,
-    description TEXT,
-    filename TEXT,
-    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  )
-`);
 
 // 💾 S3 setup
 const s3 = new AWS.S3({
@@ -67,7 +69,7 @@ const BUCKET_NAME = process.env.AWS_BUCKET_NAME;
 const upload = multer({ storage: multer.memoryStorage() });
 
 // 🔐 Upload route
-app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
+app.post('/api/upload', checkAuth, upload.single('image'), async (req, res) => {
   const { title, description } = req.body;
   const file = req.file;
 
@@ -75,88 +77,68 @@ app.post('/api/upload', checkAuth, upload.single('image'), (req, res) => {
 
   const fileKey = `${uuidv4()}-${file.originalname}`;
 
-  s3.upload({
-    Bucket: BUCKET_NAME,
-    Key: fileKey,
-    Body: file.buffer,
-    ContentType: file.mimetype,
-  }, (err, data) => {
-    if (err) {
-      console.error('❌ S3 Upload Error:', err.message);
-      return res.status(500).json({ error: err.message });
-    }
+  try {
+    const s3Res = await s3.upload({
+      Bucket: BUCKET_NAME,
+      Key: fileKey,
+      Body: file.buffer,
+      ContentType: file.mimetype,
+    }).promise();
 
-    console.log('✅ Uploaded to S3:', data.Location);
+    console.log('✅ Uploaded to S3:', s3Res.Location);
 
-    db.run(
-      `INSERT INTO artwork (title, description, filename) VALUES (?, ?, ?)`,
-      [title, description, fileKey],
-      function (err) {
-        if (err) {
-          console.error('❌ DB Insert Error:', err.message);
-          return res.status(500).json({ error: err.message });
-        }
-
-        console.log('✅ Saved to DB:', this.lastID);
-        res.json({ success: true, id: this.lastID });
-      }
+    const result = await db.query(
+      `INSERT INTO artwork (title, description, filename) VALUES ($1, $2, $3) RETURNING id`,
+      [title, description, fileKey]
     );
-  });
+
+    console.log('✅ Saved to DB:', result.rows[0].id);
+    res.json({ success: true, id: result.rows[0].id });
+  } catch (err) {
+    console.error('❌ Upload error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 🆓 Get all artworks
-app.get('/api/artworks', (req, res) => {
-  db.all(`SELECT * FROM artwork ORDER BY uploaded_at DESC`, [], (err, rows) => {
-    if (err) {
-      console.error('❌ DB Read Error:', err.message);
-      return res.status(500).json({ error: err.message });
-    }
-
-    const withUrls = rows.map(row => ({
+app.get('/api/artworks', async (req, res) => {
+  try {
+    const result = await db.query(`SELECT * FROM artwork ORDER BY uploaded_at DESC`);
+    const withUrls = result.rows.map(row => ({
       id: row.id,
       title: row.title,
       description: row.description,
       url: `https://${BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${row.filename}`,
       uploaded_at: row.uploaded_at
     }));
-
     res.json(withUrls);
-  });
+  } catch (err) {
+    console.error('❌ Fetch error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 🔐 Delete artwork by ID
-app.delete('/api/artworks/:id', checkAuth, (req, res) => {
+app.delete('/api/artworks/:id', checkAuth, async (req, res) => {
   const id = req.params.id;
 
-  db.get(`SELECT filename FROM artwork WHERE id = ?`, [id], (err, row) => {
-    if (err) {
-      console.error('❌ DB Lookup Error:', err.message);
-      return res.status(500).json({ error: err.message });
-    }
+  try {
+    const fileRes = await db.query(`SELECT filename FROM artwork WHERE id = $1`, [id]);
+    if (fileRes.rowCount === 0) return res.status(404).json({ error: 'Artwork not found.' });
 
-    if (!row) return res.status(404).json({ error: 'Artwork not found.' });
+    const filename = fileRes.rows[0].filename;
 
-    s3.deleteObject({
-      Bucket: BUCKET_NAME,
-      Key: row.filename
-    }, (err) => {
-      if (err) {
-        console.warn('⚠️ Could not delete file from S3:', err.message);
-      } else {
-        console.log('✅ Deleted from S3:', row.filename);
-      }
+    await s3.deleteObject({ Bucket: BUCKET_NAME, Key: filename }).promise();
+    console.log('✅ Deleted from S3:', filename);
 
-      db.run(`DELETE FROM artwork WHERE id = ?`, [id], (deleteErr) => {
-        if (deleteErr) {
-          console.error('❌ DB Delete Error:', deleteErr.message);
-          return res.status(500).json({ error: deleteErr.message });
-        }
+    await db.query(`DELETE FROM artwork WHERE id = $1`, [id]);
+    console.log('✅ Deleted artwork from DB:', id);
 
-        console.log('✅ Deleted artwork record from DB:', id);
-        res.json({ success: true });
-      });
-    });
-  });
+    res.json({ success: true });
+  } catch (err) {
+    console.error('❌ Delete error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ✅ Server up
